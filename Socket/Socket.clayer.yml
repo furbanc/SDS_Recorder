@@ -1,0 +1,32 @@
+layer:
+  type: Socket
+  # name: MW-Network
+  # variant: Ethernet
+  description: IoT Socket interface using MW-Network over Ethernet
+
+  connections:
+    - connect: Network Socket
+      consumes:
+        - CMSIS_ETH: 0
+        - CMSIS-RTOS2
+      provides:
+        - IoT_Socket
+
+  packs:
+    - pack: Keil::MDK-Middleware@^8.0.0
+    - pack: MDK-Packs::IoT_Socket@^1.3.0
+
+  components:
+  # - component: IoT Utility:Socket:MDK Network
+    - component: Socket:MDK Network
+    - component: Network&MDK:CORE
+    - component: Network&MDK:Interface:ETH
+    - component: Network&MDK:Service:DNS Client
+    - component: Network&MDK:Socket:BSD
+    - component: Network&MDK:Socket:TCP
+    - component: Network&MDK:Socket:UDP
+
+  groups:
+    - group: Socket
+      files: 
+        - file: ./socket_startup.c
