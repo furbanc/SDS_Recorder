@@ -1,14 +1,14 @@
 solution:
 
-  created-for: CMSIS-Toolbox@2.7.0
+  created-for: CMSIS-Toolbox@2.6.0
   cdefault:
 
   target-types:
-    # - type: <target_name>
-    #   board: <board_name>
-    #   variables:
-    #     - Board-Layer: <board_layer>.clayer.yml
-    #     - Socket-Layer: $SolutionDir()$/Socket/Socket.clayer.yml
+    - type: STM32H743I-EVAL
+      board: STMicroelectronics::STM32H743I-EVAL
+      variables:
+        - Board-Layer: $SolutionDir()$/Board/Board.clayer.yml
+        - Socket-Layer: $SolutionDir()$/Socket/Socket.clayer.yml
         
   build-types:
     - type: Debug
@@ -20,3 +20,5 @@ solution:
 
   projects:
     - project: ./SDS_Recorder.cproject.yml
+
+  compiler: AC6

@@ -23,17 +23,31 @@
 #include "main.h"
 #include "sds_rec.h"
 
-static sdsRecId_t  recId[7] = { 0 };
-static uint8_t     recBuf[7][1000];
-static uint8_t     tempBuf[80];
-static const char *recName[7] = { "In-ch0",
-                                  "In-ch1",
-                                  "In-ch2",
-                                  "In-ch3",
-                                  "In-ch4",
-                                  "In-ch5",
-                                  "Out"   };
-static osThreadId_t threadTestDataId;
+static uint8_t rec_ibuf[1500];
+static uint8_t rec_obuf[500];
+static int32_t stop_req = 0;
+
+// IMU sensor buffer
+struct IMU {
+  struct {
+    uint16_t x;
+    uint16_t y;
+    uint16_t z;
+  } accelerometer;
+  struct  {
+    uint16_t x;
+    uint16_t y;
+    uint16_t z;
+  } gyroscpe;
+} imu_buf;
+
+// Output ML buffer
+struct OUT {
+  struct {
+    uint16_t x;
+    uint16_t y;
+  } ml[10];
+} out_buf;
 
 // Idle time counter in ms
 uint32_t idle_ms = 0;
@@ -41,71 +55,100 @@ uint32_t idle_ms = 0;
 // External functions
 extern int32_t socket_startup(void);
 
+// Create dummy test data
+static void CreateInData () {
+  static uint16_t index = 0;
+  uint16_t val;
+
+  val = index;
+  index = (index + 1) % 3000;
+
+  imu_buf.accelerometer.x = val;
+  val = (val + 250) % 3000;
+  imu_buf.accelerometer.y = 2999 - val;
+  val = (val + 300) % 3000;
+  imu_buf.accelerometer.z = (val < 1500) ? val : (2999 - val);
+
+  val = (val + 150) % 1500;
+  imu_buf.gyroscpe.x = val;
+  val = (val + 70) % 1500;
+  imu_buf.gyroscpe.y = 1499 - val;
+  val = (val + 120) % 1500;
+  imu_buf.gyroscpe.z = (val < 750) ? val : (1499 - val);
+}
+
+// Create dummy ML data
+static void CreateOutData () {
+  static uint16_t index = 0;
+  int32_t i;
+  uint16_t val;
+
+  val = (index < 400) ? 0 : index;
+  index = (index + 1) % 1000;
+
+  for (i = 0; i < 10; i++) {
+    out_buf.ml[i].x = val;
+    out_buf.ml[i].y = val % 100;
+    val += 5;
+  }
+}
+
+// CPU usage (in %)
+static void cpu_usage(void) {
+  static uint32_t cnt;
+  float usage;
+
+  if ((++cnt % 50) == 0) {
+    uint32_t tick = osKernelGetTickCount();
+    usage = ((float)(tick - idle_ms) * 100) / tick;
+    printf("CPU Time: %.1fs, usage: %.2f%%\r\n", (float)tick/1000, usage);
+  }
+}
+
 // Generator thread for simulated data
 static __NO_RETURN void threadTestData(void *argument) {
-  uint32_t num, buf_size;
-  uint32_t timestamp;
-  int32_t i, j;
+  sdsRecId_t *in, *out;
+  uint32_t n, timestamp;
+  int32_t i;
   (void)argument;
 
+  in  = sdsRecOpen("In", rec_ibuf, sizeof(rec_ibuf), 2*30*20);
+  out = sdsRecOpen("Out", rec_obuf, sizeof(rec_obuf), 12*40);
+
+  printf("Recording started\r\n");
   timestamp = osKernelGetTickCount();
   for (;;) {
-    // Poll for thread termination request
-    if (osThreadFlagsWait(0x01, osFlagsWaitAny, 0) == 0x01) {
-      threadTestDataId = NULL;
+    if (stop_req) {
+      sdsRecClose(in);
+      sdsRecClose(out);
+
+      printf("Recording stopped\r\n");
+      stop_req = 0;
       osThreadExit();
     }
-    for (i = 0; i < 7; i++) {
-      // Generate dummy sensor data
-      buf_size = (i < 6) ? 60 : 40; 
-      for (j = 0; j < buf_size; j++) {
-        tempBuf[j] = (i + j) & 0xFF;
+    // Record 30 samples for 3kHz sampling rate
+    for (i = 0; i < 30; i++) {
+      CreateInData();
+      n = sdsRecWrite(in, timestamp, &imu_buf, sizeof(imu_buf));
+      if (n != sizeof(imu_buf)) {
+        printf("In: Recorder write failed\r\n");
       }
-      num = sdsRecWrite(recId[i], timestamp, tempBuf, buf_size);
-      if (num != buf_size) {
-        printf("%s: Recorder write failed\r\n", recName[i]);
-      }
-      osThreadYield();
+    }
+    // Record output ML data
+    CreateOutData();
+    n = sdsRecWrite(out, timestamp, &out_buf, sizeof(out_buf));
+    if (n != sizeof(out_buf)) {
+      printf("Out: Recorder write failed\r\n");
     }
     timestamp += 10U;
     osDelayUntil(timestamp);
   }
 }
 
-// Start recording
-static void recorder_start(void) {
-  int32_t i;
-
-  for (i = 0; i < 7; i++) {
-    recId[i] = sdsRecOpen(recName[i], recBuf[i], sizeof(recBuf[i]), (i < 6) ? 15*60 : 15*40);
-  }
-  // Create data thread
-  threadTestDataId = osThreadNew(threadTestData, NULL, NULL);
-
-  printf("Recording started\r\n");
-}
-
-// Stop recording
-static void recorder_stop(void) {
-  int32_t i;
-
-  // Send signal to data thread to self-terminate
-  osThreadFlagsSet(threadTestDataId, 0x01);
-
-  for (i = 0; i < 7; i++) {
-    sdsRecClose(recId[i]);
-    recId[i] = NULL;
-  }
-
-  printf("Recording stopped\r\n");
-}
-
-// Demo
+// Demo task
 static __NO_RETURN void demo(void *argument) {
-  uint32_t value, value_last = 0U;
-  uint8_t rec_active = 0U;
-  int32_t i = 0;
-
+  uint32_t state = 0;
+  int32_t  active = 0;
   (void)argument;
 
   printf("Starting SDS recorder...\r\n");
@@ -119,34 +162,21 @@ static __NO_RETURN void demo(void *argument) {
   sdsRecInit(NULL);
 
   for (;;) {
-    // Monitor user button
-    value = vioGetSignal(vioBUTTON0);
-    if (value != value_last) {
-      value_last = value;
-      if (value == vioBUTTON0) {
-        // Button pressed
-        if (rec_active == 0U) {
-          rec_active = 1U;
-          recorder_start();
-        }
-        else {
-          rec_active = 0U;
-          recorder_stop();
-        }
+    // BUTTON0 toggles recording on/off
+    if (state != vioGetSignal(vioBUTTON0)) {
+      state ^= vioBUTTON0;
+      if (state == vioBUTTON0) {
+        if (!active) osThreadNew(threadTestData, NULL, NULL);
+        else         stop_req = 1;    
+        active ^= 1;
       }
-      osDelay(500U);
     }
     osDelay(100U);
-    // Print system and idle time
-    if (++i == 50) {
-      uint32_t tick = osKernelGetTickCount();
-      printf("Time: %d.%03d, idle: %d.%03d\r\n", tick/1000, tick%1000, idle_ms/1000, idle_ms%1000);
-      i = 0;
-    }
+    cpu_usage();
   }
 }
 
-// Measure idle time
+// Measure system idle time
 __NO_RETURN void osRtxIdleThread(void *argument) {
   (void)argument;
   uint32_t ticks, prev;

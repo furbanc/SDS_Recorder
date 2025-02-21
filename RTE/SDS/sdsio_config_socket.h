@@ -27,7 +27,7 @@
 //   <s.16>SDSIO-Server IP
 //   <i>SDSIO socket server IPv4 address
 //   <i>Default: "0.0.0.0"
-#define SDSIO_SERVER_IP           "0.0.0.0"
+#define SDSIO_SERVER_IP           "192.168.1.102"
 
 //   <o>SDSIO-Server port
 //   <i>SDSIO socket server port
