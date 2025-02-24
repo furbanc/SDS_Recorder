@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023 Arm Limited. All rights reserved.
+ * Copyright (c) 2022-2025 Arm Limited. All rights reserved.
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -39,15 +39,15 @@ struct IMU {
     uint16_t y;
     uint16_t z;
   } gyroscpe;
-} imu_buf;
+} imu_buf[30];
 
 // Output ML buffer
 struct OUT {
   struct {
     uint16_t x;
     uint16_t y;
-  } ml[10];
-} out_buf;
+  } ml;
+} out_buf[10];
 
 // Idle time counter in ms
 uint32_t idle_ms = 0;
@@ -56,41 +56,36 @@ uint32_t idle_ms = 0;
 extern int32_t socket_startup(void);
 
 // Create dummy test data
-static void CreateInData () {
-  static uint16_t index = 0;
+static void CreateTestData () {
+  static uint16_t index_in, index_out;
   uint16_t val;
-
-  val = index;
-  index = (index + 1) % 3000;
-
-  imu_buf.accelerometer.x = val;
-  val = (val + 250) % 3000;
-  imu_buf.accelerometer.y = 2999 - val;
-  val = (val + 300) % 3000;
-  imu_buf.accelerometer.z = (val < 1500) ? val : (2999 - val);
-
-  val = (val + 150) % 1500;
-  imu_buf.gyroscpe.x = val;
-  val = (val + 70) % 1500;
-  imu_buf.gyroscpe.y = 1499 - val;
-  val = (val + 120) % 1500;
-  imu_buf.gyroscpe.z = (val < 750) ? val : (1499 - val);
-}
-
-// Create dummy ML data
-static void CreateOutData () {
-  static uint16_t index = 0;
   int32_t i;
-  uint16_t val;
 
-  val = (index < 400) ? 0 : index;
-  index = (index + 1) % 1000;
+  // Sensor input data
+  for (i = 0; i < 30; i++) {
+    val = (index_in + i) % 3000;
+    imu_buf[i].accelerometer.x = val;
+    val = (val + 250) % 3000;
+    imu_buf[i].accelerometer.y = 2999 - val;
+    val = (val + 300) % 3000;
+    imu_buf[i].accelerometer.z = (val < 1500) ? val : (2999 - val);
 
-  for (i = 0; i < 10; i++) {
-    out_buf.ml[i].x = val;
-    out_buf.ml[i].y = val % 100;
-    val += 5;
+    val = (val + 150) % 1500;
+    imu_buf[i].gyroscpe.x = val;
+    val = (val + 70) % 1500;
+    imu_buf[i].gyroscpe.y = 1499 - val;
+    val = (val + 120) % 1500;
+    imu_buf[i].gyroscpe.z = (val < 750) ? val : (1499 - val);
   }
+  index_in = (index_in + i) % 3000;
+
+  // ML output data
+  for (i = 0; i < 10; i++) {
+    val = (index_out + i) % 1000;
+    out_buf[i].ml.x = val;
+    out_buf[i].ml.y = val % 500;
+  }
+  index_out = (index_out + i) % 1000;
 }
 
 // CPU usage (in %)
@@ -112,8 +107,8 @@ static __NO_RETURN void threadTestData(void *argument) {
   int32_t i;
   (void)argument;
 
-  in  = sdsRecOpen("In", rec_ibuf, sizeof(rec_ibuf), 2*30*20);
-  out = sdsRecOpen("Out", rec_obuf, sizeof(rec_obuf), 12*40);
+  in  = sdsRecOpen("In", rec_ibuf, sizeof(rec_ibuf), 3*(sizeof(imu_buf)+8));
+  out = sdsRecOpen("Out", rec_obuf, sizeof(rec_obuf), 10*(sizeof(out_buf)+8));
 
   printf("Recording started\r\n");
   timestamp = osKernelGetTickCount();
@@ -126,16 +121,12 @@ static __NO_RETURN void threadTestData(void *argument) {
       stop_req = 0;
       osThreadExit();
     }
-    // Record 30 samples for 3kHz sampling rate
-    for (i = 0; i < 30; i++) {
-      CreateInData();
-      n = sdsRecWrite(in, timestamp, &imu_buf, sizeof(imu_buf));
-      if (n != sizeof(imu_buf)) {
-        printf("In: Recorder write failed\r\n");
-      }
+
+    CreateTestData();
+    n = sdsRecWrite(in, timestamp, &imu_buf, sizeof(imu_buf));
+    if (n != sizeof(imu_buf)) {
+      printf("In: Recorder write failed\r\n");
     }
-    // Record output ML data
-    CreateOutData();
     n = sdsRecWrite(out, timestamp, &out_buf, sizeof(out_buf));
     if (n != sizeof(out_buf)) {
       printf("Out: Recorder write failed\r\n");
