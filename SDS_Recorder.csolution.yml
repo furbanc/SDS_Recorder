@@ -7,8 +7,8 @@ solution:
     - type: STM32H743I-EVAL
       board: STMicroelectronics::STM32H743I-EVAL
       variables:
-        - Board-Layer: $SolutionDir()$/Board/Board.clayer.yml
-        - Socket-Layer: $SolutionDir()$/Socket/Socket.clayer.yml
+        - Board-Layer: $SolutionDir()$/Board/STM32H743I-EVAL/Board.clayer.yml
+        - Socket-Layer: $SolutionDir()$/Socket/MDK_Network_ETH/Socket.clayer.yml
         
   build-types:
     - type: Debug

@@ -18,13 +18,43 @@
 
 #include <stdio.h>
 
+#include "RTE_Components.h"
+
 #include "cmsis_os2.h"
+#include "os_tick.h"
 #include "cmsis_vio.h"
+
 #include "main.h"
 #include "sds_rec.h"
 
-static uint8_t rec_ibuf[1500];
-static uint8_t rec_obuf[500];
+// Configuration
+#ifndef REC_BUF_SIZE_IMU_IN
+#define REC_BUF_SIZE_IMU_IN                 8192U
+#endif
+#ifndef REC_IO_THRESHOLD_IMU_IN
+#define REC_IO_THRESHOLD_IMU_IN             7400U
+#endif
+
+#ifndef REC_BUF_SIZE_ML_OUT
+#define REC_BUF_SIZE_ML_OUT                 1536U
+#endif
+#ifndef REC_IO_THRESHOLD_ML_OUT
+#define REC_IO_THRESHOLD_ML_OUT             1400U
+#endif
+
+// Error handling
+struct {
+  uint8_t  occurred;
+  uint8_t  reported;
+  char    *file;
+  uint32_t line;
+} sds_error;
+
+#define sds_assert(cond) if (!(cond) && (!sds_error.occurred)) { \
+  sds_error.occurred = 1; sds_error.file = __FILE__; sds_error.line = __LINE__; }
+
+static uint8_t rec_buf_in [REC_BUF_SIZE_IMU_IN];
+static uint8_t rec_buf_out[REC_BUF_SIZE_ML_OUT];
 static int32_t stop_req = 0;
 
 // IMU sensor buffer
@@ -41,19 +71,22 @@ struct IMU {
   } gyroscpe;
 } imu_buf[30];
 
-// Output ML buffer
+// ML output buffer
 struct OUT {
   struct {
     uint16_t x;
     uint16_t y;
-  } ml;
-} out_buf[10];
+  } out;
+} ml_buf[10];
 
 // Idle time counter in ms
-uint32_t idle_ms = 0;
+uint32_t cnt_idle = 0;
 
 // External functions
 extern int32_t socket_startup(void);
+__WEAK int32_t socket_startup(void) {
+  return 0;
+}
 
 // Create dummy test data
 static void CreateTestData () {
@@ -82,70 +115,68 @@ static void CreateTestData () {
   // ML output data
   for (i = 0; i < 10; i++) {
     val = (index_out + i) % 1000;
-    out_buf[i].ml.x = val;
-    out_buf[i].ml.y = val % 500;
+    ml_buf[i].out.x = val;
+    ml_buf[i].out.y = val % 500;
   }
   index_out = (index_out + i) % 1000;
 }
 
-// CPU usage (in %)
-static void cpu_usage(void) {
+// Print CPU usage in %
+static void cpu_usage(int32_t active) {
   static uint32_t cnt;
-  float usage;
 
-  if ((++cnt % 50) == 0) {
-    uint32_t tick = osKernelGetTickCount();
-    usage = ((float)(tick - idle_ms) * 100) / tick;
-    printf("CPU Time: %.1fs, usage: %.2f%%\r\n", (float)tick/1000, usage);
+  if (!active) {
+    cnt_idle = cnt = 0;
+  }
+  else if (++cnt >= 30) {
+    // Usage print interval is 3 seconds
+    printf("CPU usage: %.2f%%\r\n", (float)(48000 - cnt_idle) / 480.0);
+    cnt_idle = cnt = 0;
   }
 }
 
-// Generator thread for simulated data
+// Thread for generating simulated data
 static __NO_RETURN void threadTestData(void *argument) {
   sdsRecId_t *in, *out;
   uint32_t n, timestamp;
-  int32_t i;
   (void)argument;
 
-  in  = sdsRecOpen("In", rec_ibuf, sizeof(rec_ibuf), 3*(sizeof(imu_buf)+8));
-  out = sdsRecOpen("Out", rec_obuf, sizeof(rec_obuf), 10*(sizeof(out_buf)+8));
+  in  = sdsRecOpen("In", rec_buf_in, sizeof(rec_buf_in), REC_IO_THRESHOLD_IMU_IN);
+  out = sdsRecOpen("Out", rec_buf_out, sizeof(rec_buf_out),REC_IO_THRESHOLD_ML_OUT);
 
-  printf("Recording started\r\n");
   timestamp = osKernelGetTickCount();
   for (;;) {
     if (stop_req) {
       sdsRecClose(in);
       sdsRecClose(out);
 
-      printf("Recording stopped\r\n");
       stop_req = 0;
       osThreadExit();
     }
 
     CreateTestData();
+
     n = sdsRecWrite(in, timestamp, &imu_buf, sizeof(imu_buf));
-    if (n != sizeof(imu_buf)) {
-      printf("In: Recorder write failed\r\n");
-    }
-    n = sdsRecWrite(out, timestamp, &out_buf, sizeof(out_buf));
-    if (n != sizeof(out_buf)) {
-      printf("Out: Recorder write failed\r\n");
-    }
+    sds_assert(n == sizeof(imu_buf));
+
+    n = sdsRecWrite(out, timestamp, &ml_buf, sizeof(ml_buf));
+    sds_assert(n == sizeof(ml_buf));
+
     timestamp += 10U;
     osDelayUntil(timestamp);
   }
 }
 
-// Demo task
+// Demo thread
 static __NO_RETURN void demo(void *argument) {
-  uint32_t state = 0;
+  uint32_t state  = 0;
   int32_t  active = 0;
   (void)argument;
 
-  printf("Starting SDS recorder...\r\n");
+  printf("Starting SDS recorder...\n");
 
   if (socket_startup() != 0) {
-    printf("Socket startup failed\r\n");
+    printf("Socket startup failed\n");
     osThreadExit();
   }
 
@@ -157,30 +188,40 @@ static __NO_RETURN void demo(void *argument) {
     if (state != vioGetSignal(vioBUTTON0)) {
       state ^= vioBUTTON0;
       if (state == vioBUTTON0) {
-        if (!active) osThreadNew(threadTestData, NULL, NULL);
-        else         stop_req = 1;    
+        if (!active) {
+          osThreadNew(threadTestData, NULL, NULL);
+          printf("Recording started\n");
+        }
+        else {
+          stop_req = 1;    
+          printf("Recording stopped\n");
+        }
         active ^= 1;
       }
     }
+    if (sds_error.occurred) {
+      printf("SDS error in file: %s line %d\n", sds_error.file, sds_error.line);
+      sds_error.reported = 1;
+      sds_error.occurred = 0;
+    }
     osDelay(100U);
-    cpu_usage();
+    cpu_usage(active);
   }
 }
 
 // Measure system idle time
 __NO_RETURN void osRtxIdleThread(void *argument) {
+  uint32_t tick, next = 0xFFFFFFFF;
   (void)argument;
-  uint32_t ticks, prev;
 
-  prev = osKernelGetTickCount();
   for (;;) {
     __WFI();
-    ticks = osKernelGetTickCount();
-    if (ticks == (prev + 1)) {
-      // Count only full idle tick intervals
-      idle_ms++;
+    tick = osKernelGetTickCount();
+    if (tick == next) {
+      // Counts in sixteenths of an interval
+      cnt_idle += (16 - 16*OS_Tick_GetCount()/OS_Tick_GetInterval());
     }
-    prev = ticks;
+    next = tick + 1;
   }
 }
 
