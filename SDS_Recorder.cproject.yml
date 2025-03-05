@@ -20,7 +20,7 @@ project:
     - component: CMSIS:OS Tick:SysTick
     - component: SDS:Buffer
     - component: SDS:IO:Socket
-    - component: SDS:Recorder
+    - component: SDS:Recorder&CMSIS-RTOS2
 
   groups:
     - group: Documentation
